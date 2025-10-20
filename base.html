@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<!--
+  AI Brief Manager — Sidebar UI (RTL)
+  Purpose: Provide a right-to-left, Persian-first editor for creating and
+  managing content briefs inside Google Sheets. The UI communicates with
+  Apps Script functions exposed in main.gs via google.script.run, loads
+  existing brief data, triggers AI generation for specific fields, and
+  saves changes back to the BriefData sheet.
+
+  Key parts:
+  - Layout and styling (Bootstrap, Icons, Vazir font)
+  - Toolbar (edit, save, AI actions)
+  - Form fields for brief sections (title, SEO title, meta, outline, FAQ, etc.)
+  - Client logic: toggle read-only/edit states, toast notifications,
+    copy helpers, keyboard shortcuts, and calls to server functions:
+      * getInitialData() — preload saved brief and model
+      * saveData(...)    — persist current brief
+      * generateContentFromServer(...) — AI generation per field
+-->
+<html lang="fa" dir="rtl">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+  <style>
+    @font-face {
+      font-family: 'Vazir';
+      src: url('https://cdn.jsdelivr.net/gh/rastikerdar/vazir-font/dist/Vazir-Regular.woff2') format('woff2');
+    }
+    body {
+      font-family: 'Vazir', sans-serif;
+      direction: rtl;
+      text-align: right;
+      max-width: 100%;
+      padding-right: 15px;
+      padding-left: 15px;
+    }
+    input, textarea {
+      transition: all 0.3s ease;
+    }
+    .readonly input:not(#topic), .readonly textarea {
+      background-color: #f5f5f5 !important;
+      pointer-events: none !important;
+    }
+    .form-label {
+      font-weight: bold;
+      margin-bottom: 0.25rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .form-icon {
+      color: #00B894;
+      font-size: 1.1rem;
+      margin-left: 5px;
+    }
+    .btn-action {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.8rem;
+    }
+    .section-header {
+      color: #00B894;
+      font-weight: bold;
+      border-bottom: 2px solid #e0e0e0;
+      margin: 1rem 0 0.5rem 0;
+      padding-bottom: 0.25rem;
+    }
+    .loading {
+      display: inline-block;
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid rgba(0, 184, 148, 0.3);
+      border-radius: 50%;
+      border-top-color: #00B894;
+      animation: spin 1s ease-in-out infinite;
+      margin-right: 0.5rem;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .toast-container {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      z-index: 9999;
+    }
+    .copy-success {
+      min-width: 200px;
+      background-color: #d4edda;
+      color: #155724;
+      border-radius: 4px;
+      padding: 0.75rem;
+      margin-bottom: 0.5rem;
+      display: none;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      background-color: #fff;
+      padding: 10px 0;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 10px;
+      z-index: 100;
+    }
+    textarea.form-control {
+      min-height: 70px;
+    }
+    /* نمایش اسکرول‌بار زیباتر */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 10px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #c1c1c1;
+      border-radius: 10px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #a1a1a1;
+    }
+    /* استایل‌های اضافی برای اطمینان از کلیک‌پذیر بودن دکمه‌ها */
+    .btn {
+      position: relative;
+      z-index: 10;
+      cursor: pointer !important;
+      pointer-events: auto !important;
+    }
+    .btn:hover {
+      opacity: 0.9;
+    }
+    .ai-generate-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      padding: 0.2rem 0.5rem;
+      font-size: 0.75rem;
+      transition: transform 0.2s ease;
+    }
+    .ai-generate-btn i {
+      font-size: 1rem;
+    }
+    .ai-generate-btn:disabled {
+      opacity: 0.6;
+      transform: none;
+    }
+    #aiLoadingOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+    .ai-loading-content {
+      background: rgba(10, 10, 10, 0.85);
+      padding: 2rem;
+      border-radius: 16px;
+      text-align: center;
+      color: #fff;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+    .ai-orb {
+      width: 70px;
+      height: 70px;
+      margin: 0 auto 1rem auto;
+      border-radius: 50%;
+      position: relative;
+      background: radial-gradient(circle at 30% 30%, #74f7d3, #036bfc);
+      animation: aiPulse 1.6s ease-in-out infinite;
+      box-shadow: 0 0 20px rgba(116, 247, 211, 0.6);
+    }
+    .ai-orb::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      border: 2px dashed rgba(116, 247, 211, 0.4);
+      animation: aiOrbit 2.4s linear infinite;
+    }
+    @keyframes aiPulse {
+      0%, 100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 12px rgba(116, 247, 211, 0.4);
+      }
+      50% {
+        transform: scale(1.05);
+        box-shadow: 0 0 24px rgba(3, 107, 252, 0.6);
+      }
+    }
+    @keyframes aiOrbit {
+      0% { transform: translate(-50%, -50%) rotate(0deg); }
+      100% { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="toast-container">
+    <div id="copyToast" class="copy-success">
+      <i class="bi bi-check-circle-fill me-1"></i> کپی شد!
+    </div>
+  </div>
+  
+  <!-- فیلد مخفی برای ذخیره عنوان اصلی -->
+  <input type="hidden" id="originalTitle">
+
+  <div class="toolbar d-flex justify-content-between align-items-center">
+    <h5 class="m-0" id="formTitle"></h5>
+    <div class="btn-group btn-group-sm">
+      <button class="btn btn-outline-secondary" id="editBtn" type="button" onclick="toggleEdit()">
+        <i class="bi bi-pencil"></i> ویرایش
+      </button>
+      <button class="btn btn-outline-primary" type="button" onclick="copyBrief()">
+        <i class="bi bi-clipboard"></i> کپی
+      </button>
+      <button class="btn btn-outline-success" type="button" id="saveBtn" onclick="saveBrief()" disabled>
+        <i class="bi bi-check-lg"></i> ذخیره
+      </button>
+    </div>
+  </div>
+
+  <div id="briefForm" class="readonly">
+    <div class="mb-3">
+      <label class="form-label" for="topic">
+        <span><i class="bi bi-lightbulb form-icon"></i> موضوع</span>
+      </label>
+      <input type="text" class="form-control" id="topic" placeholder="موضوع اصلی محتوا را اینجا وارد کنید...">
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label" for="aiModel">
+        <span><i class="bi bi-cpu form-icon"></i> مدل هوش مصنوعی</span>
+      </label>
+      <select class="form-select" id="aiModel">
+        <option value="gpt-5-mini">GPT-5 Mini</option>
+        <option value="google_gemini-google-gemini-2.5-flash">Google Gemini 2.5 Flash</option>
+      </select>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="titleContent">
+        <span><i class="bi bi-card-heading form-icon"></i> عنوان محتوا</span>
+      </label>
+      <input type="text" class="form-control" id="titleContent" readonly>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="seoTitle">
+        <span><i class="bi bi-tag form-icon"></i> عنوان سئو</span>
+        <button type="button" class="btn btn-outline-primary btn-sm ai-generate-btn" data-target="seoTitle" title="تولید خودکار" onclick="generateAiContent(event)" disabled>
+          <i class="bi bi-sparkles"></i>
+        </button>
+      </label>
+      <input type="text" class="form-control" id="seoTitle" readonly>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="metaDescription">
+        <span><i class="bi bi-card-text form-icon"></i> متا دیسکریپشن</span>
+        <button type="button" class="btn btn-outline-primary btn-sm ai-generate-btn" data-target="metaDescription" title="تولید خودکار" onclick="generateAiContent(event)" disabled>
+          <i class="bi bi-sparkles"></i>
+        </button>
+      </label>
+      <textarea class="form-control" id="metaDescription" rows="2" readonly></textarea>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="entities">
+        <span><i class="bi bi-diagram-3 form-icon"></i> انتیتی</span>
+        <button type="button" class="btn btn-outline-primary btn-sm ai-generate-btn" data-target="entities" title="تولید خودکار" onclick="generateAiContent(event)" disabled>
+          <i class="bi bi-sparkles"></i>
+        </button>
+      </label>
+      <textarea class="form-control" id="entities" rows="2" readonly></textarea>
+    </div>
+    
+    <div class="section-header">ساختار محتوا</div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="structure">
+        <span><i class="bi bi-list-nested form-icon"></i> ساختار مقاله</span>
+        <button type="button" class="btn btn-outline-primary btn-sm ai-generate-btn" data-target="structure" title="تولید خودکار" onclick="generateAiContent(event)" disabled>
+          <i class="bi bi-sparkles"></i>
+        </button>
+      </label>
+      <textarea class="form-control" id="structure" rows="5" readonly></textarea>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="faq">
+        <span><i class="bi bi-question-circle form-icon"></i> سوالات متداول</span>
+        <button type="button" class="btn btn-outline-primary btn-sm ai-generate-btn" data-target="faq" title="تولید خودکار" onclick="generateAiContent(event)" disabled>
+          <i class="bi bi-sparkles"></i>
+        </button>
+      </label>
+      <textarea class="form-control" id="faq" rows="2" readonly></textarea>
+    </div>
+    
+    <div class="section-header">کلیدواژه‌ها و SEO</div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="mainKeyword">
+        <span><i class="bi bi-star-fill form-icon"></i> کلمه کلیدی اصلی</span>
+      </label>
+      <input type="text" class="form-control" id="mainKeyword" readonly>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="keywords">
+        <span><i class="bi bi-hash form-icon"></i> کلمات کلیدی</span>
+        <button type="button" class="btn btn-outline-primary btn-sm ai-generate-btn" data-target="keywords" title="تولید خودکار" onclick="generateAiContent(event)" disabled>
+          <i class="bi bi-sparkles"></i>
+        </button>
+      </label>
+      <textarea class="form-control" id="keywords" rows="2" readonly></textarea>
+    </div>
+    
+    <div class="section-header">موارد تکمیلی</div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="richContent">
+        <span><i class="bi bi-image form-icon"></i> محتوای غنی پیشنهادی</span>
+      </label>
+      <textarea class="form-control" id="richContent" rows="2" readonly></textarea>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="internalLinks">
+        <span><i class="bi bi-link-45deg form-icon"></i> لینکسازی داخلی پیشنهادی</span>
+      </label>
+      <textarea class="form-control" id="internalLinks" rows="2" readonly></textarea>
+    </div>
+    
+    <div class="mb-3">
+      <label class="form-label" for="description">
+        <span><i class="bi bi-info-circle form-icon"></i> توضیحات</span>
+      </label>
+      <textarea class="form-control" id="description" rows="2" readonly></textarea>
+    </div>
+  </div>
+
+  <div class="d-flex gap-2 mt-4 mb-4 justify-content-end">
+    <button class="btn btn-secondary" type="button" onclick="google.script.host.close()">
+      <i class="bi bi-x-lg"></i> بستن
+    </button>
+  </div>
+
+  <div id="aiLoadingOverlay">
+    <div class="ai-loading-content">
+      <div class="ai-orb"></div>
+      <div class="fw-bold">AI در حال تولید محتوا...</div>
+    </div>
+  </div>
+
+  <script>
+    // متغیر برای کنترل حالت ویرایش
+    let isEditMode = false;
+    
+    function showAiLoading() {
+      document.getElementById('aiLoadingOverlay').style.display = 'flex';
+    }
+
+    function hideAiLoading() {
+      document.getElementById('aiLoadingOverlay').style.display = 'none';
+    }
+
+    function generateAiContent(event) {
+      event.preventDefault();
+      const topic = document.getElementById('topic').value.trim();
+      if (!topic) {
+        alert('لطفا ابتدا موضوع را برای تولید محتوا مشخص کنید.');
+        return;
+      }
+
+      const button = event.currentTarget;
+      const targetId = button.getAttribute('data-target');
+      if (!targetId) {
+        alert('هدف تولید محتوا مشخص نیست.');
+        return;
+      }
+
+      const targetEl = document.getElementById(targetId);
+      if (!targetEl) {
+        alert('فیلد موردنظر یافت نشد.');
+        return;
+      }
+
+      const mainKeyword = document.getElementById('mainKeyword').value || '';
+      const entities = document.getElementById('entities').value || '';
+      const model = document.getElementById('aiModel').value || '';
+      const context = {
+        mainKeyword: mainKeyword,
+        entities: entities,
+        currentValue: targetEl.value || '',
+        model: model
+      };
+
+      showAiLoading();
+      button.disabled = true;
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          targetEl.value = result || '';
+          hideAiLoading();
+          if (!isEditMode) {
+            toggleEdit();
+          }
+          button.disabled = !isEditMode ? true : false;
+        })
+        .withFailureHandler(function(error) {
+          hideAiLoading();
+          button.disabled = !isEditMode ? true : false;
+          alert('خطا در تولید محتوا: ' + (error && error.message ? error.message : 'خطای نامشخص'));
+        })
+        .generateContentFromServer(targetId, topic, context);
+    }
+
+    // نمایش عنوان در بالای فرم
+    function updateFormTitle(title) {
+      document.getElementById('formTitle').textContent = `بریف: ${title}`;
+      document.title = `بریف: ${title}`;
+    }
+    
+    // تغییر حالت ویرایش/مشاهده
+    function toggleEdit() {
+      console.log("تابع toggleEdit فراخوانی شد");
+      isEditMode = !isEditMode;
+      
+      const formEl = document.getElementById('briefForm');
+      const editBtn = document.getElementById('editBtn');
+      const saveBtn = document.getElementById('saveBtn');
+      const aiButtons = document.querySelectorAll('.ai-generate-btn');
+      
+      if (isEditMode) {
+        console.log("فعال کردن حالت ویرایش");
+        formEl.classList.remove('readonly');
+        editBtn.innerHTML = '<i class="bi bi-eye"></i> مشاهده';
+        editBtn.classList.replace('btn-outline-secondary', 'btn-outline-info');
+        saveBtn.disabled = false;
+        
+        // تمام فیلدها را قابل ویرایش کنیم (با روش مستقیم‌تر)
+        const inputs = document.querySelectorAll('#briefForm input');
+        console.log("تعداد input ها:", inputs.length);
+        inputs.forEach(input => {
+          if (input.id === 'topic') {
+            input.readOnly = false;
+            input.style.backgroundColor = '#ffffff';
+            input.style.pointerEvents = 'auto';
+            console.log("input فعال شد:", input.id);
+            return;
+          }
+          input.readOnly = false;
+          input.style.backgroundColor = '#ffffff';
+          input.style.pointerEvents = 'auto';
+          console.log("input فعال شد:", input.id);
+        });
+        
+        const textareas = document.querySelectorAll('#briefForm textarea');
+        console.log("تعداد textarea ها:", textareas.length);
+        textareas.forEach(textarea => {
+          textarea.readOnly = false;
+          textarea.style.backgroundColor = '#ffffff';
+          textarea.style.pointerEvents = 'auto';
+          console.log("textarea فعال شد:", textarea.id);
+        });
+        aiButtons.forEach(btn => {
+          btn.disabled = false;
+        });
+        const modelSelect = document.getElementById('aiModel');
+        modelSelect.disabled = false;
+        modelSelect.style.backgroundColor = '#ffffff';
+        modelSelect.style.pointerEvents = 'auto';
+      } else {
+        console.log("غیرفعال کردن حالت ویرایش");
+        formEl.classList.add('readonly');
+        editBtn.innerHTML = '<i class="bi bi-pencil"></i> ویرایش';
+        editBtn.classList.replace('btn-outline-info', 'btn-outline-secondary');
+        saveBtn.disabled = true;
+        
+        // تمام فیلدها را غیرقابل ویرایش کنیم
+        const inputs = document.querySelectorAll('#briefForm input');
+        console.log("تعداد input ها:", inputs.length);
+        inputs.forEach(input => {
+          if (input.id === 'topic') {
+            input.readOnly = false;
+            input.style.backgroundColor = '#ffffff';
+            input.style.pointerEvents = 'auto';
+            console.log("input فعال شد:", input.id);
+            return;
+          }
+          input.readOnly = true;
+          input.style.backgroundColor = '#f5f5f5';
+          input.style.pointerEvents = 'none';
+          console.log("input غیرفعال شد:", input.id);
+        });
+        
+        const textareas = document.querySelectorAll('#briefForm textarea');
+        console.log("تعداد textarea ها:", textareas.length);
+        textareas.forEach(textarea => {
+          textarea.readOnly = true;
+          textarea.style.backgroundColor = '#f5f5f5';
+          textarea.style.pointerEvents = 'none';
+          console.log("textarea غیرفعال شد:", textarea.id);
+        });
+        aiButtons.forEach(btn => {
+          btn.disabled = true;
+        });
+        const modelSelect = document.getElementById('aiModel');
+        modelSelect.disabled = true;
+        modelSelect.style.backgroundColor = '#f5f5f5';
+        modelSelect.style.pointerEvents = 'none';
+        console.log("select غیرفعال شد:", modelSelect.id);
+      }
+    }
+    
+    // ذخیره اطلاعات بریف
+    function saveBrief() {
+      console.log("تابع saveBrief فراخوانی شد");
+      const saveBtn = document.getElementById('saveBtn');
+      const originalText = saveBtn.innerHTML;
+      
+      // بررسی عنوان محتوا
+      const titleContent = document.getElementById('titleContent').value.trim();
+      if (!titleContent) {
+        alert('لطفا عنوان محتوا را وارد کنید');
+        return;
+      }
+      
+      // نمایش حالت در حال ذخیره
+      saveBtn.innerHTML = '<span class="loading"></span> ذخیره...';
+      saveBtn.disabled = true;
+      
+      // دریافت عنوان اصلی برای مشخص کردن رکورد قبلی
+      const originalTitle = document.getElementById('originalTitle').value;
+      console.log("عنوان اصلی:", originalTitle, "عنوان جدید:", titleContent);
+      
+      // ساخت آبجکت داده برای ارسال
+      const data = {
+        originalTitle: originalTitle, // برای شناسایی رکورد اصلی
+        titleContent: titleContent,
+        seoTitle: document.getElementById('seoTitle').value,
+        metaDescription: document.getElementById('metaDescription').value,
+        structure: document.getElementById('structure').value,
+        faq: document.getElementById('faq').value,
+        mainKeyword: document.getElementById('mainKeyword').value,
+        keywords: document.getElementById('keywords').value,
+        entities: document.getElementById('entities').value,
+        richContent: document.getElementById('richContent').value,
+        internalLinks: document.getElementById('internalLinks').value,
+        description: document.getElementById('description').value,
+        aiModel: document.getElementById('aiModel').value
+      };
+      
+      console.log("اطلاعات فرم برای ذخیره:", data);
+      
+      google.script.run
+        .withSuccessHandler((result) => {
+          console.log("نتیجه ذخیره:", result);
+          if (!result || !result.success) {
+            alert('خطا در ذخیره‌سازی: ' + (result ? result.message : 'خطای نامشخص'));
+            saveBtn.innerHTML = originalText;
+            saveBtn.disabled = false;
+            return;
+          }
+          
+          // ایجاد دکمه نمایش در سلول فعال (اگر بریف جدید است)
+          if (isNewBrief()) {
+            google.script.run
+              .withSuccessHandler((buttonResult) => {
+                console.log("نتیجه ایجاد دکمه:", buttonResult);
+                if (buttonResult) {
+                  // نمایش نوتیفیکیشن موفقیت
+                  const toast = document.getElementById('copyToast');
+                  toast.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> بریف ایجاد و دکمه نمایش اضافه شد';
+                  toast.style.display = 'block';
+                  
+                  setTimeout(() => {
+                    toast.style.display = 'none';
+                  }, 3000);
+                } else {
+                  alert('بریف ذخیره شد اما مشکلی در ایجاد دکمه به وجود آمد.');
+                }
+                
+                // به‌روزرسانی عنوان فرم
+                updateFormTitle(titleContent);
+                
+                // به‌روزرسانی فیلد مخفی عنوان اصلی - این مهم است تا در ذخیره‌های بعدی،
+                // عنوان فعلی به عنوان عنوان اصلی استفاده شود
+                document.getElementById('originalTitle').value = titleContent;
+                
+                // بازگشت به حالت عادی
+                saveBtn.innerHTML = originalText;
+                saveBtn.disabled = false;
+                toggleEdit();
+              })
+              .withFailureHandler((error) => {
+                console.error("خطا در ایجاد دکمه:", error);
+                alert('بریف ذخیره شد اما خطا در ایجاد دکمه: ' + error.message);
+                
+                saveBtn.innerHTML = originalText;
+                saveBtn.disabled = false;
+              })
+              .createButtonAfterSave(titleContent);
+          } else {
+            // نمایش نوتیفیکیشن موفقیت برای به‌روزرسانی
+            const toast = document.getElementById('copyToast');
+            toast.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> با موفقیت ذخیره شد';
+            toast.style.display = 'block';
+            
+            setTimeout(() => {
+              toast.style.display = 'none';
+            }, 3000);
+            
+            // به‌روزرسانی عنوان فرم (برای زمانی که عنوان تغییر کرده باشد)
+            updateFormTitle(titleContent);
+            
+            // به‌روزرسانی فیلد مخفی عنوان اصلی
+            document.getElementById('originalTitle').value = titleContent;
+            
+            // بازگشت به حالت عادی
+            saveBtn.innerHTML = originalText;
+            saveBtn.disabled = false;
+            toggleEdit();
+          }
+        })
+        .withFailureHandler((error) => {
+          console.error("خطا در ذخیره‌سازی:", error);
+          alert('خطا در ذخیره‌سازی: ' + (error.message || 'خطای نامشخص'));
+          saveBtn.innerHTML = originalText;
+          saveBtn.disabled = false;
+        })
+        .saveData(data);
+    }
+    
+    // کپی کردن اطلاعات بریف به کلیپبورد
+    function copyBrief() {
+      console.log("تابع copyBrief فراخوانی شد");
+      // ساختن متن کامل بریف
+      const titleContent = document.getElementById('titleContent').value;
+      
+      if (!titleContent) {
+        alert('لطفا ابتدا عنوان محتوا را وارد کنید');
+        return;
+      }
+      
+      // ساختن متن کامل بریف بدون نیاز به فراخوانی سرور
+      let textOutput = `📋 بریف محتوایی برای آکادمی بیت پین 📋\n\n`;
+      
+      textOutput += `🔹 عنوان محتوا:\n${titleContent || '-'}\n\n`;
+      textOutput += `🔹 عنوان سئو:\n${document.getElementById('seoTitle').value || '-'}\n\n`;
+      textOutput += `🔹 متا دیسکریپشن:\n${document.getElementById('metaDescription').value || '-'}\n\n`;
+      textOutput += `🔹 ساختار مقاله:\n${document.getElementById('structure').value || '-'}\n\n`;
+      textOutput += `🔹 سوالات متداول:\n${document.getElementById('faq').value || '-'}\n\n`;
+      textOutput += `🔹 کلمه کلیدی اصلی:\n${document.getElementById('mainKeyword').value || '-'}\n\n`;
+      textOutput += `🔹 کلمات کلیدی:\n${document.getElementById('keywords').value || '-'}\n\n`;
+      textOutput += `🔹 انتیتی:\n${document.getElementById('entities').value || '-'}\n\n`;
+      textOutput += `🔹 محتوای غنی پیشنهادی:\n${document.getElementById('richContent').value || '-'}\n\n`;
+      textOutput += `🔹 لینکسازی داخلی پیشنهادی:\n${document.getElementById('internalLinks').value || '-'}\n\n`;
+      textOutput += `🔹 توضیحات:\n${document.getElementById('description').value || '-'}\n\n`;
+      
+      textOutput += `🔸 توسعه داده شده توسط تیم سئو بیت پین 🔸`;
+      
+      // نمایش متن در یک textarea برای کپی دستی
+      const copyArea = document.createElement('div');
+      copyArea.style.position = 'fixed';
+      copyArea.style.top = '0';
+      copyArea.style.left = '0';
+      copyArea.style.width = '100%';
+      copyArea.style.height = '100%';
+      copyArea.style.backgroundColor = 'rgba(0,0,0,0.5)';
+      copyArea.style.zIndex = '10000';
+      copyArea.style.display = 'flex';
+      copyArea.style.justifyContent = 'center';
+      copyArea.style.alignItems = 'center';
+      copyArea.style.padding = '20px';
+      
+      const copyBox = document.createElement('div');
+      copyBox.style.backgroundColor = 'white';
+      copyBox.style.padding = '20px';
+      copyBox.style.borderRadius = '10px';
+      copyBox.style.width = '90%';
+      copyBox.style.maxWidth = '500px';
+      copyBox.style.maxHeight = '80%';
+      copyBox.style.overflowY = 'auto';
+      copyBox.style.direction = 'rtl';
+      
+      const copyText = document.createElement('textarea');
+      copyText.value = textOutput;
+      copyText.style.width = '100%';
+      copyText.style.height = '250px';
+      copyText.style.padding = '10px';
+      copyText.style.marginBottom = '15px';
+      copyText.style.direction = 'rtl';
+      copyText.style.fontFamily = 'Tahoma, Arial, sans-serif';
+      copyText.onclick = function() {
+        this.select();
+      };
+      
+      const copyClose = document.createElement('button');
+      copyClose.innerText = 'بستن';
+      copyClose.style.padding = '8px 15px';
+      copyClose.style.backgroundColor = '#6c757d';
+      copyClose.style.color = 'white';
+      copyClose.style.border = 'none';
+      copyClose.style.borderRadius = '5px';
+      copyClose.style.cursor = 'pointer';
+      copyClose.onclick = function() {
+        document.body.removeChild(copyArea);
+      };
+      
+      const copyInfo = document.createElement('p');
+      copyInfo.innerText = 'متن را انتخاب کرده و با Ctrl+C کپی کنید';
+      copyInfo.style.marginBottom = '15px';
+      copyInfo.style.color = '#555';
+      
+      copyBox.appendChild(copyInfo);
+      copyBox.appendChild(copyText);
+      copyBox.appendChild(copyClose);
+      copyArea.appendChild(copyBox);
+      document.body.appendChild(copyArea);
+      
+      // انتخاب خودکار متن
+      copyText.select();
+      
+      // نمایش پیام موفقیت
+      const toast = document.getElementById('copyToast');
+      toast.innerHTML = '<i class="bi bi-info-circle-fill me-1"></i> لطفاً متن را از کادر انتخاب کنید';
+      toast.style.display = 'block';
+      
+      setTimeout(() => {
+        toast.style.display = 'none';
+      }, 3000);
+    }
+    
+    // بررسی می‌کند که آیا این یک بریف جدید است یا خیر
+    function isNewBrief() {
+      const originalTitle = document.getElementById('originalTitle').value;
+      console.log("بررسی بریف جدید، عنوان اصلی:", originalTitle);
+      return originalTitle === '' || originalTitle === 'بریف جدید';
+    }
+    
+    // مقداردهی اولیه فیلدها با استفاده از داده‌های ارسالی از سرور
+    function initializeFields() {
+      // از داخل اسکریپت سرور استفاده می‌کنیم تا داده‌ها را بگیریم
+      google.script.run
+        .withSuccessHandler(function(data) {
+          console.log("داده‌های دریافتی از سرور:", data);
+          
+          // اگر داده‌های صحیح آمده باشد
+          if (data && data.isValid) {
+            // تنظیم عنوان اصلی
+            document.getElementById('originalTitle').value = data.isNewBrief ? 'بریف جدید' : data.title;
+            
+            // تنظیم عنوان محتوا
+            document.getElementById('titleContent').value = data.isNewBrief ? '' : data.title;
+            
+            // تنظیم عنوان فرم
+            updateFormTitle(data.isNewBrief ? 'ایجاد بریف جدید' : data.title);
+            
+            // اگر بریف موجود است و داده‌های آن هم وجود دارد
+            if (!data.isNewBrief && data.briefData) {
+              document.getElementById('seoTitle').value = data.briefData.seoTitle || '';
+              document.getElementById('metaDescription').value = data.briefData.metaDescription || '';
+              document.getElementById('structure').value = data.briefData.structure || '';
+              document.getElementById('faq').value = data.briefData.faq || '';
+              document.getElementById('mainKeyword').value = data.briefData.mainKeyword || '';
+              document.getElementById('keywords').value = data.briefData.keywords || '';
+              document.getElementById('entities').value = data.briefData.entities || '';
+              document.getElementById('richContent').value = data.briefData.richContent || '';
+              document.getElementById('internalLinks').value = data.briefData.internalLinks || '';
+              document.getElementById('description').value = data.briefData.description || '';
+            }
+            
+            // اگر بریف جدید است، حالت ویرایش را فعال کنیم
+            if (data.isNewBrief) {
+              setTimeout(toggleEdit, 100);
+            } else {
+              const savedModel = data.defaultModel || '';
+              if (savedModel) {
+                const modelSelect = document.getElementById('aiModel');
+                const optionExists = Array.from(modelSelect.options).some(opt => opt.value === savedModel);
+                if (optionExists) {
+                  modelSelect.value = savedModel;
+                } else {
+                  modelSelect.insertAdjacentHTML('beforeend', `<option value="${savedModel}">${savedModel}</option>`);
+                  modelSelect.value = savedModel;
+                }
+              }
+              console.log("داده‌های بریف موجود اعمال شد");
+            }
+          } else {
+            console.error("داده‌های نامعتبر از سرور:", data);
+          }
+        })
+        .withFailureHandler(function(error) {
+          console.error("خطا در دریافت داده‌ها:", error);
+          alert("خطا در بارگذاری اطلاعات: " + (error.message || "خطای نامشخص"));
+        })
+        .getInitialData();
+    }
+    
+    // ثبت دکمه‌ها به صورت صریح
+    document.addEventListener('DOMContentLoaded', function() {
+      console.log("صفحه بارگذاری شد");
+      
+      // اضافه کردن مجدد رویدادها به دکمه‌ها برای اطمینان بیشتر
+      document.getElementById('editBtn').onclick = toggleEdit;
+      document.getElementById('saveBtn').onclick = saveBrief;
+      
+      // لاگ کردن همه دکمه‌ها برای اطمینان
+      const allButtons = document.querySelectorAll('button');
+      console.log("تعداد کل دکمه‌ها:", allButtons.length);
+      allButtons.forEach((btn, index) => {
+        console.log(`دکمه ${index}:`, btn.innerText, "آیدی:", btn.id);
+      });
+      
+      // مقداردهی اولیه فیلدها
+      initializeFields();
+    });
+    
+    // مدیریت وضعیت کیبورد
+    document.addEventListener('keydown', function(e) {
+      // ذخیره با کلید Ctrl+S
+      if (e.ctrlKey && e.key === 's' && !document.getElementById('saveBtn').disabled) {
+        e.preventDefault();
+        saveBrief();
+      }
+      
+      // تغییر حالت ویرایش با کلید Ctrl+E
+      if (e.ctrlKey && e.key === 'e') {
+        e.preventDefault();
+        toggleEdit();
+      }
+    });
+
+    // اضافه کردن الگوی (polyfill) برای متدهای قدیمی که ممکن است در برخی محیط‌های گوگل اسکریپت موجود نباشند
+    if (!Element.prototype.matches) {
+      Element.prototype.matches = Element.prototype.msMatchesSelector || Element.prototype.webkitMatchesSelector;
+    }
+
+    if (!Element.prototype.closest) {
+      Element.prototype.closest = function(s) {
+        var el = this;
+        do {
+          if (el.matches(s)) return el;
+          el = el.parentElement || el.parentNode;
+        } while (el !== null && el.nodeType === 1);
+        return null;
+      };
+    }
+  </script>
+</body>
+</html>
